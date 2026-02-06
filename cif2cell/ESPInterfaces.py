@@ -2718,7 +2718,7 @@ class KGRNFile(GeometryOutputFile):
             nosites += len(a)
         # average wigner-seitz radius
         volume = abs(det3(self.cell.latticevectors))
-        wsr = self.cell.lengthscale * 3*volume/(nosites * 4 * pi)**third
+        wsr = self.cell.lengthscale * (3*volume/(nosites * 4 * pi))**third
         filestring += "SWS......=%8f   NSWS.=  1 DSWS..=   0.05 ALPCPA= 0.9020\n" % wsr
         filestring += "Setup: 2 + NQ*NS lines\n"
         filestring += "EFGS...=  0.000 HX....=  0.100 NX...= 11 NZ0..=  6 STMP..= Y\n"
@@ -2962,6 +2962,9 @@ class XBandSysFile(GeometryOutputFile):
         self.beta = 90
         self.gamma = 90
         self.minangmom = None
+        self.sws_mode = 0 # 0 - average (same for all)
+                          # 1 - xband default
+                          # 2 - scalled xband default
         self.filename = ""
         # To be put on the first line
         self.programdoc = ""
@@ -3060,9 +3063,33 @@ class XBandSysFile(GeometryOutputFile):
         self.cell.fill_out_empty(label="Vc")
         filestring += "%3i\n" % nq
         filestring += " IQ ICL     basis vectors     (cart. coord.) [A]                      RWS [a.u.]  NLQ  NOQ ITOQ\n"
-        # Average Wigner-Seitz radius
-        rws = pow(3*self.cell.volume()/(4*pi*len(self.cell.atomset)),
+        
+        # Average Wigner-Seitz radius (same rws for all)
+        rws_avg = pow(3*self.cell.volume()/(4*pi*len(self.cell.atomset)),
                   1.0/3.0)*self.cell.lengthscale
+        
+        # Volume calculated with default RWS
+        vol_rws = 0
+        rws_default = []
+        for a in self.cell.atomdata: # Loop sites
+            rws_biggest = 0
+            for sp in a[0].species: # Loop species in site
+                try:
+                    rws_sp = ed.rws[sp]
+                # Safeguard for when sp does not have default RWS defined
+                except:
+                    rws_sp = rws_avg
+
+                if rws_sp > rws_biggest:
+                    rws_biggest =  ed.rws[sp]
+            # Use the biggest default RWS for the site
+            rws_default.append(rws_biggest)
+            vol_rws += (4./3.)*pi*(rws_biggest)**3.
+
+        # Scalling factor to adjust Xband default RWS
+        rws_scaling = self.cell.lengthscale*\
+            (self.cell.volume()/vol_rws)**(1./3.)
+
         iq = 0
         icl = 0
         itoq = 0
@@ -3081,6 +3108,19 @@ class XBandSysFile(GeometryOutputFile):
                     angmom = max([ed.angularmomentum[ed.elementblock[spcs]]
                                   for spcs in b.species])+1
                 v = mvmult3(self.cell.latticevectors, b.position)
+                
+                match self.sws_mode:
+                    case 0 :
+                    # Average scheme of same RWS for all sites
+                        rws = rws_avg
+                    case 1:
+                    # Use XBand default, for sites with multiple species
+                    # uses the biggest RWS 
+                        rws = rws_default[iq-1]
+                    case 2:
+                    # Use the defaults RWs scalled to the cell volume
+                        rws = rws_default[iq-1]*rws_scaling
+
                 filestring += "%3i%4i%18.12f%18.12f%18.12f  %18.12f%4i%5i " % (
                     iq, icl, v[0], v[1], v[2], rws, angmom, len(a[0].species))
                 for i in itoqs:
@@ -3110,7 +3150,7 @@ class XBandSysFile(GeometryOutputFile):
             corr = 0
             for sp, conc in a[0].species.items():
                 it += 1
-                filestring += " %2i%4i  %8s%5i%6.3f" % (
+                filestring += "%3i %3i %5s %4i %6.4f " % (
                     it, ed.elementnr[sp], sp, len(a), conc)
                 iq -= corr*len(a)
                 for b in a:
